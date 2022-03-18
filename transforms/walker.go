@@ -297,6 +297,6 @@ func IsDefaultScalar(v *protoreflect.Value) bool {
 	case protoreflect.EnumNumber:
 		return x == 0
 	default:
-		panic(fmt.Sprintf("unexpected type %v", x))
+		panic(fmt.Sprintf("unexpected type %T", x))
 	}
 }
