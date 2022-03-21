@@ -61,7 +61,7 @@ func TestWalkerTimestamp(t *testing.T) {
 				},
 			},
 			map[string]interface{}{
-				"fields": map[string]interface{}{
+				"fields": map[interface{}]interface{}{
 					"foo": map[string]interface{}{"number_value": 1.2},
 					"bar": map[string]interface{}{
 						"list_value": map[string]interface{}{
@@ -91,13 +91,13 @@ func TestWalkerKeepEmpty(t *testing.T) {
 		name     string
 	}{
 		{
-			NewWalkerKeepEmpty(),
+			NewWalker(OptionKeepEmpty(true)),
 			&timestamppb.Timestamp{Seconds: 1, Nanos: 2},
 			map[string]interface{}{"seconds": int64(1), "nanos": int32(2)},
 			"happy timestamp",
 		},
 		{
-			NewWalkerKeepEmpty(),
+			NewWalker(OptionKeepEmpty(true)),
 			&timestamppb.Timestamp{Seconds: 0, Nanos: 2},
 			map[string]interface{}{"nanos": int32(2), "seconds": int64(0)},
 			"zero seconds timestamp",
@@ -111,10 +111,6 @@ func TestWalkerKeepEmpty(t *testing.T) {
 }
 
 func TestWalkerDescriptor(t *testing.T) {
-	w := NewWalker()
-	x := w.ApplyDesc((&timestamppb.Timestamp{}).ProtoReflect().Descriptor())
-	print(x)
-
 	cases := []struct {
 		walker   Walker
 		input    proto.Message
@@ -128,7 +124,7 @@ func TestWalkerDescriptor(t *testing.T) {
 			"happy descriptor",
 		},
 		{
-			NewWalkerKeepEmpty(),
+			NewWalker(OptionKeepEmpty(true)),
 			&timestamppb.Timestamp{Seconds: 0, Nanos: 2},
 			map[string]interface{}{"seconds": nil, "nanos": nil},
 			"descriptor should not care about keepEmpty",
