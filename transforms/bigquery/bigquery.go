@@ -118,13 +118,13 @@ func convertSchemaMap(fd protoreflect.FieldDescriptor, m map[interface{}]interfa
 }
 
 func NewSchemaConverter(options ...transforms.Option) SchemaConverter {
-	options = append(options,
+	basicOptions := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertSchemaScalar),
 		transforms.OptionMessageFunc(convertSchemaMessage),
 		transforms.OptionMapFunc(convertSchemaMap),
 		transforms.OptionKeepEmpty(true),
-	)
-	cs := transforms.NewWalker(options...)
+	}
+	cs := transforms.NewWalker(append(basicOptions, options...)...)
 	cs.AddOverride(ts.FullName(), func(fd protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
 		return &bigquery.FieldSchema{
 			Name: string(fd.Name()),
