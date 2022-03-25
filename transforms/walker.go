@@ -133,6 +133,8 @@ func OptionRepeatedFunc(fn RepeatedFunc) Option {
 	return &optionRepeatedFunc{Value: fn}
 }
 
+// NewWalker spawns a new Walker. If the same Option is presented multiple
+// times, the last occurrence will be used.
 func NewWalker(options ...Option) Walker {
 	w := &walker{}
 	for _, option := range options {
