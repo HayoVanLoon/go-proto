@@ -1,6 +1,19 @@
 # Protocol Buffers Utilities for Go
 
+_**Experimental(2022-03-25): May change in backwards-incompatible ways.**_
+
 A set of utilities for working with Protocol Buffers in Go.
+
+## Contents
+
+### transforms
+
+Utilities for transformations using Protocol Buffer messages.
+
+#### transforms/bigquery
+
+Implementation of `transforms.Walker` that transforms Protocol Buffer messages
+and descriptors into respectively BigQuery rows and schemas.
 
 ## License
 
