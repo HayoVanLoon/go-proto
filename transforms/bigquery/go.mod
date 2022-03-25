@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	cloud.google.com/go/bigquery v1.30.0
-	github.com/HayoVanLoon/go-proto/transforms v0.1.0
+	github.com/HayoVanLoon/go-proto/transforms v0.0.0-20220321180240-a96c47f45b7f
 	google.golang.org/protobuf v1.27.1
 )
 
@@ -28,4 +28,4 @@ require (
 	google.golang.org/grpc v1.45.0 // indirect
 )
 
-//replace github.com/HayoVanLoon/go-proto/transforms v0.1.0 => ../
+//replace github.com/HayoVanLoon/go-proto/transforms v0.0.0 => ../
