@@ -13,6 +13,19 @@ import (
 )
 
 func TestSchemaConverter(t *testing.T) {
+	valueFieldSchema := []*bigquery.FieldSchema{
+		{Name: "null_value", Type: "INTEGER"},
+		{Name: "number_value", Type: "FLOAT"},
+		{Name: "string_value", Type: "STRING"},
+		{Name: "bool_value", Type: "BOOLEAN"},
+		{Name: "struct_value", Type: "RECORD", Schema: []*bigquery.FieldSchema{
+			{Name: "fields", Type: "RECORD", Repeated: true, Schema: []*bigquery.FieldSchema{
+				{Name: "key", Type: "STRING"},
+			}},
+		}},
+		{Name: "list_value", Type: "RECORD"},
+	}
+
 	cases := []struct {
 		message  string
 		options  []transforms.Option
@@ -28,18 +41,19 @@ func TestSchemaConverter(t *testing.T) {
 			},
 		},
 		{
+			message:  "simple Value schema",
+			options:  []transforms.Option{transforms.OptionMaxDepth(1)},
+			input:    &structpb.Value{},
+			expected: valueFieldSchema,
+		},
+		{
 			message: "simple Struct schema",
-			options: []transforms.Option{transforms.OptionMaxDepth(1)},
+			options: []transforms.Option{transforms.OptionMaxDepth(2)},
 			input:   &structpb.Struct{},
 			expected: []*bigquery.FieldSchema{
 				{Name: "fields", Type: "RECORD", Repeated: true, Schema: []*bigquery.FieldSchema{
 					{Name: "key", Type: "STRING"},
-					{Name: "value", Type: "RECORD", Schema: []*bigquery.FieldSchema{
-						{Name: "null_value", Type: "INTEGER"},
-						{Name: "number_value", Type: "FLOAT"},
-						{Name: "string_value", Type: "STRING"},
-						{Name: "bool_value", Type: "BOOLEAN"},
-					}},
+					{Name: "value", Type: "RECORD", Schema: valueFieldSchema},
 				}},
 			},
 		},
@@ -49,31 +63,61 @@ func TestSchemaConverter(t *testing.T) {
 		schemaConverter := NewSchemaConverter(c.options...)
 		actual := schemaConverter.Apply(c.input.ProtoReflect().Descriptor())
 		if !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s, expected %s, got %v", c.message, pretty(c.expected), pretty(actual))
+			t.Errorf("%s, \nexpected %s, \ngot      %v", c.message, pretty(c.expected), pretty(actual))
 		}
 	}
 }
 
 func TestRowConverter(t *testing.T) {
 	cases := []struct {
-		message  string
 		options  []transforms.Option
 		input    proto.Message
 		expected interface{}
+		message  string
 	}{
 		{
-			message:  "simple timestamp row",
 			input:    &timestamppb.Timestamp{Seconds: 1, Nanos: 2},
 			expected: map[string]interface{}{"seconds": int64(1), "nanos": int64(2)},
+			message:  "simple timestamp row",
 		},
-		// TODO(hvl): add map test
+		{
+			input: &structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					"foo": structpb.NewNumberValue(1.2),
+					"bar": structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{
+						structpb.NewStringValue("bla"),
+						structpb.NewStringValue("bus"),
+					}}),
+				},
+			},
+			expected: map[string]interface{}{
+				"fields": []map[string]interface{}{
+					{
+						"key": "bar",
+						"value": map[string]interface{}{
+							"list_value": map[string]interface{}{
+								"values": []interface{}{
+									map[string]interface{}{"string_value": "bla"},
+									map[string]interface{}{"string_value": "bus"},
+								},
+							},
+						},
+					},
+					{
+						"key":   "foo",
+						"value": map[string]interface{}{"number_value": 1.2},
+					},
+				},
+			},
+			message: "map field"},
+		// TODO(hvl): test (stability of) maps with non-string keys
 	}
 
 	for _, c := range cases {
 		schemaConverter := NewRowConverter()
 		actual := schemaConverter.Apply(c.input)
 		if !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s, expected %v, got %v", c.message, c.expected, actual)
+			t.Errorf("%s, \nexpected %v, \ngot      %v", c.message, c.expected, actual)
 		}
 	}
 }

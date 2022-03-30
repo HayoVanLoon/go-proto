@@ -7,30 +7,27 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"sort"
 	"time"
 )
 
-var ts = func() protoreflect.MessageDescriptor {
-	t := timestamppb.Timestamp{}
-	return t.ProtoReflect().Descriptor()
-}()
+var timestampDescriptor = (&timestamppb.Timestamp{}).ProtoReflect().Descriptor()
 
 func GetBigQueryType(fd protoreflect.FieldDescriptor) bigquery.FieldType {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
 		return bigquery.BooleanFieldType
-	case protoreflect.Int32Kind:
-	case protoreflect.Int64Kind:
-	case protoreflect.Sint32Kind:
-	case protoreflect.Sint64Kind:
-		return bigquery.StringFieldType
+	case protoreflect.EnumKind, protoreflect.Int32Kind, protoreflect.Int64Kind,
+		protoreflect.Sint32Kind, protoreflect.Sint64Kind:
+		return bigquery.IntegerFieldType
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		return bigquery.FloatFieldType
 	case protoreflect.StringKind:
 		return bigquery.StringFieldType
-	case protoreflect.MessageKind:
-		return bigquery.RecordFieldType
+	case protoreflect.BytesKind:
+		return bigquery.BytesFieldType
+	default:
+		panic(fmt.Sprintf("unsupported type %v", fd.Kind()))
 	}
-	panic(fmt.Sprintf("unsupported type %v", fd.Kind()))
 }
 
 type SchemaConverter interface {
@@ -43,71 +40,43 @@ type schemaConverter struct {
 
 func convertSchemaScalar(fd protoreflect.FieldDescriptor, _ *protoreflect.Value) interface{} {
 	name := string(fd.Name())
-	switch fd.Kind() {
-	case protoreflect.BoolKind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.BooleanFieldType}
-	case protoreflect.EnumKind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.IntegerFieldType}
-	case protoreflect.Int32Kind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.IntegerFieldType}
-	case protoreflect.Int64Kind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.IntegerFieldType}
-	case protoreflect.Sint32Kind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.IntegerFieldType}
-	case protoreflect.Sint64Kind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.IntegerFieldType}
-	case protoreflect.FloatKind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.FloatFieldType}
-	case protoreflect.DoubleKind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.FloatFieldType}
-	case protoreflect.StringKind:
-		return &bigquery.FieldSchema{Name: string(fd.Name()), Type: bigquery.StringFieldType}
-	case protoreflect.BytesKind:
-		return &bigquery.FieldSchema{Name: name, Type: bigquery.BytesFieldType}
-	default:
-		return nil
-	}
+	typ := GetBigQueryType(fd)
+	return &bigquery.FieldSchema{Name: name, Type: typ}
 }
 
-func convertSchemaMessage(fd protoreflect.FieldDescriptor, m map[string]interface{}) interface{} {
-	// hvl: order by field numbers (most stable characteristic)
-	var xs []struct {
-		int
-		*bigquery.FieldSchema
-	}
-	fds := fd.Message().Fields()
-	for k, v := range m {
-		fd := fds.ByName(protoreflect.Name(k))
-		switch x := v.(type) {
+func convertSchemaMessage(fd protoreflect.FieldDescriptor, kvs []transforms.KeyValue) interface{} {
+	var fs []*bigquery.FieldSchema
+	for _, v := range kvs {
+		switch x := v.Value.(type) {
 		case *bigquery.FieldSchema:
-			xs = append(xs, struct {
-				int
-				*bigquery.FieldSchema
-			}{int(fd.Number()), x})
+			fs = append(fs, x)
 		}
-	}
-	sort.Slice(xs, func(i, j int) bool { return xs[i].int < xs[j].int })
-
-	schema := make([]*bigquery.FieldSchema, len(xs))
-	for i, v := range xs {
-		schema[i] = v.FieldSchema
 	}
 	return &bigquery.FieldSchema{
 		Name:   string(fd.Name()),
 		Type:   bigquery.RecordFieldType,
-		Schema: schema,
+		Schema: fs,
 	}
 }
 
 func convertSchemaMap(fd protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} {
-	var fs []*bigquery.FieldSchema
+	// cast and impose order on key and value fields
+	casted := map[string]*bigquery.FieldSchema{}
 	for _, v := range m {
 		switch x := v.(type) {
 		case *bigquery.FieldSchema:
-			fs = append(fs, x)
+			casted[x.Name] = x
+		case nil:
 		default:
 			panic(fmt.Sprintf("expected *bigquery.FieldSchema, got %T", x))
 		}
+	}
+	var fs []*bigquery.FieldSchema
+	if v := casted["key"]; v != nil {
+		fs = append(fs, v)
+	}
+	if v := casted["value"]; v != nil {
+		fs = append(fs, v)
 	}
 	return &bigquery.FieldSchema{
 		Name:     string(fd.Name()),
@@ -117,20 +86,23 @@ func convertSchemaMap(fd protoreflect.FieldDescriptor, m map[interface{}]interfa
 	}
 }
 
+func convertSchemaTimestamp(fd protoreflect.FieldDescriptor, _ []transforms.KeyValue) interface{} {
+	return &bigquery.FieldSchema{
+		Name: string(fd.Name()),
+		Type: bigquery.TimestampFieldType,
+	}
+}
+
 func NewSchemaConverter(options ...transforms.Option) SchemaConverter {
 	basicOptions := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertSchemaScalar),
 		transforms.OptionMessageFunc(convertSchemaMessage),
 		transforms.OptionMapFunc(convertSchemaMap),
 		transforms.OptionKeepEmpty(true),
+		transforms.OptionKeepOrder(true),
+		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertSchemaTimestamp),
 	}
 	cs := transforms.NewWalker(append(basicOptions, options...)...)
-	cs.AddOverride(ts.FullName(), func(fd protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
-		return &bigquery.FieldSchema{
-			Name: string(fd.Name()),
-			Type: bigquery.TimestampFieldType,
-		}
-	})
 	return &schemaConverter{walker: cs}
 }
 
@@ -138,9 +110,9 @@ func (sc *schemaConverter) Apply(md protoreflect.MessageDescriptor) []*bigquery.
 	out := sc.walker.ApplyDesc(md)
 	var fs []*bigquery.FieldSchema
 	switch x := out.(type) {
-	case map[string]interface{}:
+	case []transforms.KeyValue:
 		for _, v := range x {
-			switch y := v.(type) {
+			switch y := v.Value.(type) {
 			case *bigquery.FieldSchema:
 				fs = append(fs, y)
 			}
@@ -210,31 +182,50 @@ func convertRowScalar(fd protoreflect.FieldDescriptor, v *protoreflect.Value) in
 	}
 }
 
-func convertRowMapFunc(md protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} {
+func convertRowMapFunc(fd protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} {
+	var keys []interface{}
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortMapKeys(fd, keys)
 	var kvs []map[string]interface{}
-	for k, v := range m {
+	for _, k := range keys {
 		kvs = append(kvs, map[string]interface{}{
 			"key":   k,
-			"value": v,
+			"value": m[k],
 		})
 	}
 	return kvs
+}
+
+func convertRowTimestamp(_ protoreflect.FieldDescriptor, kvs []transforms.KeyValue) interface{} {
+	if len(kvs) == 0 {
+		return nil
+	}
+	seconds := int64(0)
+	nanos := int64(0)
+	for _, kv := range kvs {
+		if kv.Key == "seconds" {
+			switch x := kv.Value.(type) {
+			case protoreflect.Value:
+				seconds = x.Int()
+			}
+		} else {
+			switch x := kv.Value.(type) {
+			case protoreflect.Value:
+				nanos = x.Int()
+			}
+		}
+	}
+	return time.Unix(seconds, nanos)
 }
 
 func NewRowConverter(options ...transforms.Option) RowConverter {
 	basicOptions := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertRowScalar),
 		transforms.OptionMapFunc(convertRowMapFunc),
+		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertRowTimestamp),
 	}
 	cs := transforms.NewWalker(append(basicOptions, options...)...)
-	cs.AddOverride(ts.FullName(), func(_ protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
-		if v == nil {
-			return nil
-		}
-		m := v.Message()
-		seconds := ts.Fields().ByName("seconds")
-		nanos := ts.Fields().ByName("nanos")
-		return time.Unix(m.Get(seconds).Int(), m.Get(nanos).Int())
-	})
 	return &rowConverter{walker: cs}
 }
