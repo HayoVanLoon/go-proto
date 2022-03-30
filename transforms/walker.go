@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"sort"
 )
 
 type ScalarFunc func(protoreflect.FieldDescriptor, *protoreflect.Value) interface{}
-type MessageFunc func(protoreflect.FieldDescriptor, map[string]interface{}) interface{}
+type MessageFunc func(protoreflect.FieldDescriptor, []KeyValue) interface{}
 type MapFunc func(protoreflect.FieldDescriptor, map[interface{}]interface{}) interface{}
 type RepeatedFunc func(protoreflect.FieldDescriptor, []interface{}) interface{}
 
@@ -20,20 +21,16 @@ const defaultMaxRecurse = 99
 // A Walker walks over a Protocol Buffers message or message descriptor.
 // Without additional configuration, it will return it as a map.
 type Walker interface {
-	// AddScalarFunc adds a conversion function for a scalar kind. If no
-	// conversion function has been specified for a certain kind, the default
-	// function specified via SetDefaultFunc will be applied.
-	AddScalarFunc(protoreflect.Kind, ScalarFunc)
-
-	// AddOverride defines a special treatment for the given message type. The
-	// type name is expected to be the full name.
-	AddOverride(string, ScalarFunc)
-
 	// Apply will apply this Walker to a Message.
 	Apply(m proto.Message) interface{}
 
 	// ApplyDesc will apply this Walker to a message Descriptor.
 	ApplyDesc(d protoreflect.MessageDescriptor) interface{}
+}
+
+type KeyValue struct {
+	Key   string
+	Value interface{}
 }
 
 type walker struct {
@@ -43,8 +40,9 @@ type walker struct {
 	mapFn     MapFunc
 	repFn     RepeatedFunc
 	keepEmpty bool
+	keepOrder bool
 	maxDepth  int
-	overrides map[string]ScalarFunc
+	overrides map[string]MessageFunc
 }
 
 type Option interface {
@@ -115,7 +113,8 @@ func (o *optionMessageFunc) Apply(w *walker) {
 }
 
 // OptionMessageFunc sets the message type conversion function. The default is
-// an identity function.
+// an identity function. The top-level message will not be treated by this
+// function; it has no FieldDescriptor.
 func OptionMessageFunc(fn MessageFunc) Option {
 	return &optionMessageFunc{Value: fn}
 }
@@ -134,10 +133,59 @@ func OptionRepeatedFunc(fn RepeatedFunc) Option {
 	return &optionRepeatedFunc{Value: fn}
 }
 
+type optionKeepOrder struct {
+	Value bool
+}
+
+func (o *optionKeepOrder) Apply(w *walker) {
+	w.keepOrder = o.Value
+}
+
+// OptionKeepOrder will cause the Walker to return a list of KeyValue structs if
+// set to true, rather than an unordered map. This list will be ordered
+// according to the fields' protocol buffer numbers.
+func OptionKeepOrder(v bool) Option {
+	return &optionKeepOrder{Value: v}
+}
+
+type optionAddOverride struct {
+	Key   string
+	Value MessageFunc
+}
+
+func (o *optionAddOverride) Apply(w *walker) {
+	w.overrides[o.Key] = o.Value
+}
+
+// OptionAddOverride defines a special treatment for the given message type. The
+// type name is expected to be the full name.
+func OptionAddOverride(k string, v MessageFunc) Option {
+	return &optionAddOverride{Key: k, Value: v}
+}
+
+type optionAddScalarFunc struct {
+	Key   protoreflect.Kind
+	Value ScalarFunc
+}
+
+func (o *optionAddScalarFunc) Apply(w *walker) {
+	w.scalarFns[o.Key] = o.Value
+}
+
+// OptionAddScalarFunc adds a conversion function for a scalar kind. If no
+// conversion function has been specified for a certain kind, the default
+// function specified via SetDefaultFunc will be applied.
+func OptionAddScalarFunc(k protoreflect.Kind, v ScalarFunc) Option {
+	return &optionAddScalarFunc{Key: k, Value: v}
+}
+
 // NewWalker spawns a new Walker. If the same Option is presented multiple
 // times, the last occurrence will be used.
 func NewWalker(options ...Option) Walker {
-	w := &walker{}
+	w := &walker{
+		overrides: map[string]MessageFunc{},
+		scalarFns: map[protoreflect.Kind]ScalarFunc{},
+	}
 	for _, option := range options {
 		option.Apply(w)
 	}
@@ -150,7 +198,11 @@ func NewWalker(options ...Option) Walker {
 		}
 	}
 	if w.messageFn == nil {
-		w.messageFn = func(fd protoreflect.FieldDescriptor, m map[string]interface{}) interface{} {
+		w.messageFn = func(fd protoreflect.FieldDescriptor, kvs []KeyValue) interface{} {
+			m := make(map[string]interface{})
+			for _, kv := range kvs {
+				m[kv.Key] = kv.Value
+			}
 			return m
 		}
 	}
@@ -164,38 +216,14 @@ func NewWalker(options ...Option) Walker {
 			return xs
 		}
 	}
-	if w.scalarFns == nil {
-		w.scalarFns = make(map[protoreflect.Kind]ScalarFunc)
-	}
-	if w.maxDepth == 0 {
+	if w.maxDepth <= 0 {
 		w.maxDepth = defaultMaxRecurse
-	}
-	if w.overrides == nil {
-		w.overrides = map[string]ScalarFunc{}
 	}
 	return w
 }
 
-func (w *walker) AddScalarFunc(kind protoreflect.Kind, fn ScalarFunc) {
-	if !kind.IsValid() {
-		panic("invalid kind")
-	}
-	if kind == protoreflect.MessageKind || kind == protoreflect.GroupKind {
-		panic("must be a scalar kind")
-	}
-	w.scalarFns[kind] = fn
-}
-
-func (w *walker) AddOverride(name string, fn ScalarFunc) {
-	w.overrides[name] = fn
-}
-
 func (w *walker) Apply(m proto.Message) interface{} {
 	mp := m.ProtoReflect()
-	v := w.convertMessage(mp.Descriptor(), m.ProtoReflect(), 0)
-	if !w.keepEmpty && v == nil {
-		return nil
-	}
 	return w.convertMessage(mp.Descriptor(), mp, 0)
 }
 
@@ -203,26 +231,40 @@ func (w *walker) ApplyDesc(d protoreflect.MessageDescriptor) interface{} {
 	return w.convertMessage(d, nil, 0)
 }
 
-func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflect.Message, depth int) map[string]interface{} {
+func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflect.Message, depth int) interface{} {
 	// only messages induce a risk of infinite recursion
 	if depth > w.maxDepth {
 		return nil
 	}
 	fds := md.Fields()
-	return w.convertMessageFields(fds, m, depth)
+	kvs := w.convertMessageFields(fds, m, depth)
+	if w.keepOrder {
+		return kvs
+	}
+	result := make(map[string]interface{})
+	for _, kv := range kvs {
+		result[kv.Key] = kv.Value
+	}
+	return result
 }
 
-func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m protoreflect.Message, depth int) map[string]interface{} {
-	result := make(map[string]interface{})
-	for i := 0; i < fds.Len(); i += 1 {
-		fd := fds.Get(i)
+func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m protoreflect.Message, depth int) []KeyValue {
+	var result []KeyValue
+	ss := make([]protoreflect.FieldDescriptor, fds.Len())
+	for i := 0; i < len(ss); i += 1 {
+		ss[i] = fds.Get(i)
+	}
+	sort.Slice(ss, func(i, j int) bool {
+		return ss[i].Number() < ss[j].Number()
+	})
+	for _, fd := range ss {
 		if m == nil {
-			result[string(fd.Name())] = w.convertValue(fd, nil, depth+1)
+			result = append(result, KeyValue{string(fd.Name()), w.convertValue(fd, nil, depth+1)})
 		} else {
 			v := m.Get(fd)
 			x := w.convertValue(fd, &v, depth+1)
 			if x != nil {
-				result[string(fd.Name())] = x
+				result = append(result, KeyValue{string(fd.Name()), x})
 			}
 		}
 	}
@@ -251,10 +293,6 @@ func (w *walker) convertValue(fd protoreflect.FieldDescriptor, v *protoreflect.V
 // (nor can be) performed on this assumption.
 func (w *walker) convertNonRepeatedValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int) interface{} {
 	if fd.Kind() == protoreflect.MessageKind {
-		override := w.overrides[string(fd.Message().FullName())]
-		if override != nil {
-			return override(fd, v)
-		}
 		if v == nil {
 			return w.applyMessageFn(fd, nil, depth)
 		}
@@ -328,6 +366,10 @@ func (w walker) applyMessageFn(fd protoreflect.FieldDescriptor, m protoreflect.M
 	v := w.convertMessageFields(fds, m, depth)
 	if !w.keepEmpty && len(v) == 0 {
 		return nil
+	}
+	override := w.overrides[string(fd.Message().FullName())]
+	if override != nil {
+		return override(fd, v)
 	}
 	return w.messageFn(fd, v)
 }

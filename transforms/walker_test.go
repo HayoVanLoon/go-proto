@@ -5,10 +5,12 @@ package transforms
 
 import (
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/apipb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -16,7 +18,7 @@ func TestWalker(t *testing.T) {
 	cases := []struct {
 		walker   Walker
 		input    proto.Message
-		expected map[string]interface{}
+		expected interface{}
 		name     string
 	}{
 		{
@@ -24,6 +26,25 @@ func TestWalker(t *testing.T) {
 			&timestamppb.Timestamp{Seconds: 1, Nanos: 2},
 			map[string]interface{}{"seconds": int64(1), "nanos": int32(2)},
 			"happy timestamp",
+		},
+		{
+			NewWalker(OptionKeepOrder(true)),
+			&timestamppb.Timestamp{Seconds: 1, Nanos: 2},
+			[]KeyValue{{"seconds", int64(1)}, {"nanos", int32(2)}},
+			"happy keep order",
+		},
+		{
+			NewWalker(
+				OptionAddScalarFunc(protoreflect.Int64Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
+					return value.Int() % 3
+				}),
+				OptionAddScalarFunc(protoreflect.Int32Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
+					return strconv.Itoa(int(value.Int()))
+				}),
+			),
+			&timestamppb.Timestamp{Seconds: 4, Nanos: 2},
+			map[string]interface{}{"seconds": int64(1), "nanos": "2"},
+			"happy scalar override for int64 and int32",
 		},
 		{
 			NewWalker(),
@@ -117,7 +138,7 @@ func TestWalkerDescriptor(t *testing.T) {
 	cases := []struct {
 		walker   Walker
 		input    proto.Message
-		expected map[string]interface{}
+		expected interface{}
 		name     string
 	}{
 		{
@@ -125,6 +146,12 @@ func TestWalkerDescriptor(t *testing.T) {
 			&timestamppb.Timestamp{Seconds: 1, Nanos: 2},
 			map[string]interface{}{"seconds": nil, "nanos": nil},
 			"happy descriptor",
+		},
+		{
+			NewWalker(OptionKeepOrder(true)),
+			&timestamppb.Timestamp{Seconds: 1, Nanos: 2},
+			[]KeyValue{{"seconds", nil}, {"nanos", nil}},
+			"happy descriptor with keep order",
 		},
 		{
 			NewWalker(OptionKeepEmpty(true)),
