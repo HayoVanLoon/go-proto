@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestWalkerTimestamp(t *testing.T) {
+func TestWalker(t *testing.T) {
 	cases := []struct {
 		walker   Walker
 		input    proto.Message
@@ -37,6 +37,7 @@ func TestWalkerTimestamp(t *testing.T) {
 				Name: "foo",
 				Methods: []*apipb.Method{
 					{Name: "foo_method", RequestStreaming: true},
+					{Name: "bar_method", RequestStreaming: false},
 				},
 			},
 			map[string]interface{}{
@@ -45,7 +46,9 @@ func TestWalkerTimestamp(t *testing.T) {
 					map[string]interface{}{
 						"name": "foo_method", "request_streaming": true,
 					},
-				},
+					map[string]interface{}{
+						"name": "bar_method",
+					}},
 			},
 			"nested repeated",
 		},
@@ -129,10 +132,77 @@ func TestWalkerDescriptor(t *testing.T) {
 			map[string]interface{}{"seconds": nil, "nanos": nil},
 			"descriptor should not care about keepEmpty",
 		},
+		{
+			NewWalker(),
+			&apipb.Api{
+				Name: "foo",
+				Methods: []*apipb.Method{
+					{Name: "foo_method", RequestStreaming: true},
+					{Name: "bar_method", RequestStreaming: false},
+				},
+			},
+			map[string]interface{}{
+				"name":    nil,
+				"methods": nil,
+				"mixins":  nil,
+				"options": nil,
+				"source_context": map[string]interface{}{
+					"file_name": nil,
+				},
+				"syntax":  nil,
+				"version": nil,
+			},
+			"nested repeated",
+		},
+		{
+			NewWalker(OptionMaxDepth(1)),
+			&structpb.Value{},
+			map[string]interface{}{
+				"null_value":   nil,
+				"string_value": nil,
+				"number_value": nil,
+				"bool_value":   nil,
+				"list_value": map[string]interface{}{
+					"values": nil,
+				},
+				"struct_value": map[string]interface{}{
+					"fields": map[interface{}]interface{}{
+						"key":   nil,
+						"value": nil,
+					},
+				},
+			},
+			"oneof",
+		},
+		{
+			NewWalker(OptionMaxDepth(2)),
+			&structpb.Struct{},
+			map[string]interface{}{
+				"fields": map[interface{}]interface{}{
+					"key": nil,
+					"value": map[string]interface{}{
+						"null_value":   nil,
+						"string_value": nil,
+						"number_value": nil,
+						"bool_value":   nil,
+						"list_value": map[string]interface{}{
+							"values": nil,
+						},
+						"struct_value": map[string]interface{}{
+							"fields": map[interface{}]interface{}{
+								"key":   nil,
+								"value": nil,
+							},
+						},
+					},
+				},
+			},
+			"map field",
+		},
 	}
 	for _, c := range cases {
 		if actual := c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
 		}
 	}
 }

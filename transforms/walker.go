@@ -25,8 +25,9 @@ type Walker interface {
 	// function specified via SetDefaultFunc will be applied.
 	AddScalarFunc(protoreflect.Kind, ScalarFunc)
 
-	// AddOverride defines a special treatment for the given message type.
-	AddOverride(protoreflect.FullName, ScalarFunc)
+	// AddOverride defines a special treatment for the given message type. The
+	// type name is expected to be the full name.
+	AddOverride(string, ScalarFunc)
 
 	// Apply will apply this Walker to a Message.
 	Apply(m proto.Message) interface{}
@@ -43,7 +44,7 @@ type walker struct {
 	repFn     RepeatedFunc
 	keepEmpty bool
 	maxDepth  int
-	overrides map[protoreflect.FullName]ScalarFunc
+	overrides map[string]ScalarFunc
 }
 
 type Option interface {
@@ -170,7 +171,7 @@ func NewWalker(options ...Option) Walker {
 		w.maxDepth = defaultMaxRecurse
 	}
 	if w.overrides == nil {
-		w.overrides = map[protoreflect.FullName]ScalarFunc{}
+		w.overrides = map[string]ScalarFunc{}
 	}
 	return w
 }
@@ -185,7 +186,7 @@ func (w *walker) AddScalarFunc(kind protoreflect.Kind, fn ScalarFunc) {
 	w.scalarFns[kind] = fn
 }
 
-func (w *walker) AddOverride(name protoreflect.FullName, fn ScalarFunc) {
+func (w *walker) AddOverride(name string, fn ScalarFunc) {
 	w.overrides[name] = fn
 }
 
@@ -250,7 +251,7 @@ func (w *walker) convertValue(fd protoreflect.FieldDescriptor, v *protoreflect.V
 // (nor can be) performed on this assumption.
 func (w *walker) convertNonRepeatedValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int) interface{} {
 	if fd.Kind() == protoreflect.MessageKind {
-		override := w.overrides[fd.Message().FullName()]
+		override := w.overrides[string(fd.Message().FullName())]
 		if override != nil {
 			return override(fd, v)
 		}
@@ -285,8 +286,8 @@ func (w *walker) convertMap(fd protoreflect.FieldDescriptor, v *protoreflect.Val
 	m := make(map[interface{}]interface{})
 	if v == nil {
 		kfd := fd.MapKey()
-		m[kfd.Name()] = w.convertNonRepeatedValue(kfd, nil, depth)
-		m[vfd.Name()] = w.convertNonRepeatedValue(vfd, nil, depth)
+		m[string(kfd.Name())] = w.convertNonRepeatedValue(kfd, nil, depth)
+		m[string(vfd.Name())] = w.convertNonRepeatedValue(vfd, nil, depth)
 	} else {
 		rangeFn := func(k protoreflect.MapKey, iv protoreflect.Value) bool {
 			x := w.convertNonRepeatedValue(vfd, &iv, depth)
