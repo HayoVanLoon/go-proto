@@ -46,141 +46,201 @@ type walker struct {
 }
 
 type Option interface {
+	// Type returns the Option's type.
+	Type() OptionType
+
+	// Apply applies the Option to the Walker.
 	Apply(w *walker)
 }
 
+type OptionType int
+
+const (
+	OptionTypeKeepEmpty = OptionType(1) + iota
+	OptionTypeMaxDepth
+	OptionTypeDefaultScalarFunc
+	OptionTypeMapFunc
+	OptionTypeMessageFunc
+	OptionTypeRepeatedFunc
+	OptionTypeKeepOrder
+	OptionTypeAddOverride
+	OptionTypeAddScalarFunc
+)
+
 type optionMaxDepth struct {
-	Value int
+	value int
+}
+
+func (o *optionMaxDepth) Type() OptionType {
+	return OptionTypeMaxDepth
 }
 
 func (o *optionMaxDepth) Apply(w *walker) {
-	w.maxDepth = o.Value
+	w.maxDepth = o.value
 }
 
 // OptionMaxDepth sets a maximum message recursion depth. This mitigates the
 // impact of infinite recursion in recursive messages like protobuf.Struct.
 // Only traversed Message fields add to the recursion depth.
 func OptionMaxDepth(v int) Option {
-	return &optionMaxDepth{Value: v}
+	return &optionMaxDepth{value: v}
 }
 
 type optionKeepEmpty struct {
-	Value bool
+	value bool
+}
+
+func (o *optionKeepEmpty) Type() OptionType {
+	return OptionTypeKeepEmpty
 }
 
 func (o *optionKeepEmpty) Apply(w *walker) {
-	w.keepEmpty = o.Value
+	w.keepEmpty = o.value
 }
 
 func OptionKeepEmpty(v bool) Option {
-	return &optionKeepEmpty{Value: v}
+	return &optionKeepEmpty{value: v}
 }
 
 type optionDefaultScalarFunc struct {
-	Value ScalarFunc
+	value ScalarFunc
+}
+
+func (o *optionDefaultScalarFunc) Type() OptionType {
+	return OptionTypeDefaultScalarFunc
 }
 
 func (o *optionDefaultScalarFunc) Apply(w *walker) {
-	w.defltFn = o.Value
+	w.defltFn = o.value
 }
 
 // OptionDefaultScalarFunc sets the default scalar conversion function. When
 // omitted, the default function is an identity function.
 func OptionDefaultScalarFunc(fn ScalarFunc) Option {
-	return &optionDefaultScalarFunc{Value: fn}
+	return &optionDefaultScalarFunc{value: fn}
 }
 
 type optionMapFunc struct {
-	Value MapFunc
+	value MapFunc
+}
+
+func (o *optionMapFunc) Type() OptionType {
+	return OptionTypeMapFunc
 }
 
 func (o *optionMapFunc) Apply(w *walker) {
-	w.mapFn = o.Value
+	w.mapFn = o.value
 }
 
 // OptionMapFunc sets the map type conversion function. The default is an
 // identity function.
 func OptionMapFunc(fn MapFunc) Option {
-	return &optionMapFunc{Value: fn}
+	return &optionMapFunc{value: fn}
 }
 
 type optionMessageFunc struct {
-	Value MessageFunc
+	value MessageFunc
+}
+
+func (o *optionMessageFunc) Type() OptionType {
+	return OptionTypeMessageFunc
 }
 
 func (o *optionMessageFunc) Apply(w *walker) {
-	w.messageFn = o.Value
+	w.messageFn = o.value
 }
 
 // OptionMessageFunc sets the message type conversion function. The default is
 // an identity function. The top-level message will not be treated by this
 // function; it has no FieldDescriptor.
 func OptionMessageFunc(fn MessageFunc) Option {
-	return &optionMessageFunc{Value: fn}
+	return &optionMessageFunc{value: fn}
 }
 
 type optionRepeatedFunc struct {
-	Value RepeatedFunc
+	value RepeatedFunc
+}
+
+func (o *optionRepeatedFunc) Type() OptionType {
+	return OptionTypeRepeatedFunc
 }
 
 func (o *optionRepeatedFunc) Apply(w *walker) {
-	w.repFn = o.Value
+	w.repFn = o.value
 }
 
 // OptionRepeatedFunc sets the repeated field conversion function. The default
 // is an identity function.
 func OptionRepeatedFunc(fn RepeatedFunc) Option {
-	return &optionRepeatedFunc{Value: fn}
+	return &optionRepeatedFunc{value: fn}
 }
 
 type optionKeepOrder struct {
-	Value bool
+	value bool
+}
+
+func (o *optionKeepOrder) Type() OptionType {
+	return OptionTypeKeepOrder
 }
 
 func (o *optionKeepOrder) Apply(w *walker) {
-	w.keepOrder = o.Value
+	w.keepOrder = o.value
 }
 
 // OptionKeepOrder will cause the Walker to return a list of KeyValue structs if
 // set to true, rather than an unordered map. This list will be ordered
 // according to the fields' protocol buffer numbers.
 func OptionKeepOrder(v bool) Option {
-	return &optionKeepOrder{Value: v}
+	return &optionKeepOrder{value: v}
 }
 
 type optionAddOverride struct {
-	Key   string
-	Value MessageFunc
+	key   string
+	value MessageFunc
+}
+
+func (o *optionAddOverride) Type() OptionType {
+	return OptionTypeAddOverride
 }
 
 func (o *optionAddOverride) Apply(w *walker) {
-	w.overrides[o.Key] = o.Value
+	w.overrides[o.key] = o.value
 }
 
 // OptionAddOverride defines a special treatment for the given message type. The
-// type name is expected to be the full name.
-func OptionAddOverride(k string, v MessageFunc) Option {
-	return &optionAddOverride{Key: k, Value: v}
+// type name is expected to be the full name, i.e. 'string'.
+//
+// You can effectively use multiple instances of this option as long as their
+// type name differs.
+func OptionAddOverride(type_ string, v MessageFunc) Option {
+	return &optionAddOverride{key: type_, value: v}
 }
 
 type optionAddScalarFunc struct {
-	Key   protoreflect.Kind
-	Value ScalarFunc
+	key   protoreflect.Kind
+	value ScalarFunc
+}
+
+func (o *optionAddScalarFunc) Type() OptionType {
+	return OptionTypeAddScalarFunc
 }
 
 func (o *optionAddScalarFunc) Apply(w *walker) {
-	w.scalarFns[o.Key] = o.Value
+	w.scalarFns[o.key] = o.value
 }
 
 // OptionAddScalarFunc adds a conversion function for a scalar kind. If no
 // conversion function has been specified for a certain kind, the default
 // function specified via SetDefaultFunc will be applied.
+//
+// You can effectively use multiple instances of this option as long as their
+// protoreflect.Kind differs.
 func OptionAddScalarFunc(k protoreflect.Kind, v ScalarFunc) Option {
-	return &optionAddScalarFunc{Key: k, Value: v}
+	return &optionAddScalarFunc{key: k, value: v}
 }
 
-// NewWalker spawns a new Walker. If the same Option is presented multiple
-// times, the last occurrence will be used.
+// NewWalker spawns a new Walker. The provided options will be processed in
+// sequence and later options may overwrite earlier ones.
 func NewWalker(options ...Option) Walker {
 	w := &walker{
 		overrides: map[string]MessageFunc{},
