@@ -4,7 +4,7 @@ go 1.17
 
 require (
 	cloud.google.com/go/bigquery v1.30.1
-	github.com/HayoVanLoon/go-proto/transforms v0.0.0-20220330125354-1599f7e4507d
+	github.com/HayoVanLoon/go-proto/transforms v0.0.0-20220404123321-f45647846394
 	google.golang.org/protobuf v1.28.0
 )
 

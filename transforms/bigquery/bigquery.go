@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-var timestampDescriptor = (&timestamppb.Timestamp{}).ProtoReflect().Descriptor()
-
 func GetBigQueryType(fd protoreflect.FieldDescriptor) bigquery.FieldType {
 	switch fd.Kind() {
 	case protoreflect.BoolKind:
@@ -93,8 +91,16 @@ func convertSchemaTimestamp(fd protoreflect.FieldDescriptor, _ []transforms.KeyV
 	}
 }
 
+var timestampDescriptor = (&timestamppb.Timestamp{}).ProtoReflect().Descriptor()
+
+// NewSchemaConverter will create a new SchemaConverter.
+//
+// The following options can be used to override default behaviour:
+// - transforms.OptionAddOverride
+// - transforms.OptionAddScalarFunc
+// - transforms.OptionMaxDepth
 func NewSchemaConverter(options ...transforms.Option) SchemaConverter {
-	basicOptions := []transforms.Option{
+	opts := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertSchemaScalar),
 		transforms.OptionMessageFunc(convertSchemaMessage),
 		transforms.OptionMapFunc(convertSchemaMap),
@@ -102,7 +108,14 @@ func NewSchemaConverter(options ...transforms.Option) SchemaConverter {
 		transforms.OptionKeepOrder(true),
 		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertSchemaTimestamp),
 	}
-	cs := transforms.NewWalker(append(basicOptions, options...)...)
+	for _, option := range options {
+		switch option.Type() {
+		case transforms.OptionTypeAddOverride, transforms.OptionTypeAddScalarFunc,
+			transforms.OptionTypeMaxDepth:
+			opts = append(opts, option)
+		}
+	}
+	cs := transforms.NewWalker(opts...)
 	return &schemaConverter{walker: cs}
 }
 
@@ -149,29 +162,12 @@ func convertRowScalar(fd protoreflect.FieldDescriptor, v *protoreflect.Value) in
 		return v.Bool()
 	case protoreflect.EnumKind:
 		return v.Enum()
-	case protoreflect.Int32Kind:
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Uint32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Uint64Kind,
+		protoreflect.Sfixed32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Sfixed64Kind, protoreflect.Fixed64Kind:
 		return v.Int()
-	case protoreflect.Sint32Kind:
-		return v.Int()
-	case protoreflect.Uint32Kind:
-		return v.Int()
-	case protoreflect.Int64Kind:
-		return v.Int()
-	case protoreflect.Sint64Kind:
-		return v.Int()
-	case protoreflect.Uint64Kind:
-		return v.Int()
-	case protoreflect.Sfixed32Kind:
-		return v.Int()
-	case protoreflect.Fixed32Kind:
-		return v.Int()
-	case protoreflect.FloatKind:
-		return v.Float()
-	case protoreflect.Sfixed64Kind:
-		return v.Int()
-	case protoreflect.Fixed64Kind:
-		return v.Int()
-	case protoreflect.DoubleKind:
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		return v.Float()
 	case protoreflect.StringKind:
 		return v.String()
@@ -187,6 +183,7 @@ func convertRowMapFunc(fd protoreflect.FieldDescriptor, m map[interface{}]interf
 	for k := range m {
 		keys = append(keys, k)
 	}
+	// hvl: sort keys by their natural ordering for stability
 	sortMapKeys(fd, keys)
 	var kvs []map[string]interface{}
 	for _, k := range keys {
@@ -220,12 +217,25 @@ func convertRowTimestamp(_ protoreflect.FieldDescriptor, kvs []transforms.KeyVal
 	return time.Unix(seconds, nanos)
 }
 
+// NewRowConverter will create a new SchemaConverter.
+//
+// The following options can be used to override default behaviour:
+// - transforms.OptionAddOverride
+// - transforms.OptionAddScalarFunc
+// - transforms.OptionMaxDepth
 func NewRowConverter(options ...transforms.Option) RowConverter {
-	basicOptions := []transforms.Option{
+	opts := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertRowScalar),
 		transforms.OptionMapFunc(convertRowMapFunc),
 		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertRowTimestamp),
 	}
-	cs := transforms.NewWalker(append(basicOptions, options...)...)
+	for _, option := range options {
+		switch option.Type() {
+		case transforms.OptionTypeAddOverride, transforms.OptionTypeAddScalarFunc,
+			transforms.OptionTypeMaxDepth:
+			opts = append(opts, option)
+		}
+	}
+	cs := transforms.NewWalker(opts...)
 	return &rowConverter{walker: cs}
 }
