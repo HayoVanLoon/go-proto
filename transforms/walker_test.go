@@ -372,6 +372,53 @@ func TestOptionAddNameOverride(t *testing.T) {
 	}
 }
 
+func BenchmarkOptionAddNameOverride(b *testing.B) {
+	cases := []struct {
+		walker Walker
+		input  proto.Message
+	}{
+		{
+			NewWalker(OptionAddNameOverride(
+				"methods.name",
+				func(_ protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
+					return strings.ToUpper(v.String())
+				},
+			)),
+			&apipb.Api{
+				Name: "foo",
+				Methods: []*apipb.Method{
+					{Name: "foo_method", RequestStreaming: true},
+					{Name: "bar_method"},
+				},
+			},
+		},
+		{
+			NewWalker(OptionAddNameOverride(
+				"fields",
+				func(_ protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} {
+					return len(m)
+				},
+			)),
+			&structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					"foo": structpb.NewNumberValue(1.2),
+					"bar": structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{
+						structpb.NewStringValue("bla"),
+						structpb.NewStringValue("bus"),
+					}}),
+				},
+			},
+		},
+	}
+	//	b.Run("test", func(b *testing.B) {
+	for i := 0; i < b.N; i += 1 {
+		for _, c := range cases {
+			c.walker.Apply(c.input)
+		}
+	}
+	//	})
+}
+
 func TestOptionAddScalarFunc(t *testing.T) {
 	cases := []struct {
 		walker   Walker
@@ -681,6 +728,39 @@ func TestOptionMaxDepth_Descriptor(t *testing.T) {
 				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
 			}
 		})
+	}
+}
+
+func BenchmarkOptionMaxDepth_Descriptor(b *testing.B) {
+	cases := []struct {
+		walker Walker
+		input  proto.Message
+	}{
+		{
+			NewWalker(OptionMaxDepth(-1)),
+			&apipb.Api{},
+		},
+		{
+			NewWalker(OptionMaxDepth(0)),
+			&apipb.Api{},
+		},
+		{
+			NewWalker(OptionMaxDepth(0)),
+			&structpb.Value{},
+		},
+		{
+			NewWalker(OptionMaxDepth(1)),
+			&structpb.Value{},
+		},
+		{
+			NewWalker(OptionMaxDepth(2)),
+			&structpb.Struct{},
+		},
+	}
+	for i := 0; i < b.N; i += 1 {
+		for _, c := range cases {
+			c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor())
+		}
 	}
 }
 
