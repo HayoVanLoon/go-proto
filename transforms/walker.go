@@ -28,6 +28,16 @@ func FromScalarFunc(f ScalarFunc) OverrideFunc {
 	}
 }
 
+func FromMapFunc(f MapFunc) OverrideFunc {
+	return func(fd protoreflect.FieldDescriptor, v interface{}) interface{} {
+		switch x := v.(type) {
+		case map[interface{}]interface{}:
+			return f(fd, x)
+		}
+		panic(fmt.Sprintf("expected type map[interface{}]interface{}, got %T", v))
+	}
+}
+
 func FromMessageFunc(f MessageFunc) OverrideFunc {
 	return func(fd protoreflect.FieldDescriptor, v interface{}) interface{} {
 		switch x := v.(type) {
@@ -56,16 +66,17 @@ type KeyValue struct {
 }
 
 type walker struct {
-	scalarFns     map[protoreflect.Kind]ScalarFunc
-	defltFn       ScalarFunc
-	messageFn     MessageFunc
-	mapFn         MapFunc
-	repFn         RepeatedFunc
-	keepEmpty     bool
-	keepOrder     bool
-	maxDepth      int
-	typeOverrides map[string]MessageFunc
-	nameOverrides map[string]OverrideFunc
+	scalarFns       map[protoreflect.Kind]ScalarFunc
+	defltFn         ScalarFunc
+	messageFn       MessageFunc
+	mapFn           MapFunc
+	repFn           RepeatedFunc
+	keepEmpty       bool
+	keepOrder       bool
+	maxDepth        int
+	maxDepthForName map[string]int
+	typeOverrides   map[string]MessageFunc
+	nameOverrides   map[string]OverrideFunc
 }
 
 type Option interface {
@@ -78,9 +89,11 @@ type Option interface {
 
 type OptionType int
 
+// TODO(hvl): OptionTypeMaxDepthForType
 const (
 	OptionTypeKeepEmpty = OptionType(1) + iota
 	OptionTypeMaxDepth
+	OptionTypeMaxDepthForName
 	OptionTypeDefaultScalarFunc
 	OptionTypeMapFunc
 	OptionTypeMessageFunc
@@ -111,6 +124,30 @@ func (o *optionMaxDepth) Apply(w *walker) {
 // than zero, the default recursion depth (99) will be used.
 func OptionMaxDepth(v int) Option {
 	return &optionMaxDepth{value: v}
+}
+
+type optionMaxDepthForName struct {
+	key   string
+	value int
+}
+
+func (o *optionMaxDepthForName) Type() OptionType {
+	return OptionTypeMaxDepthForName
+}
+
+func (o *optionMaxDepthForName) Apply(w *walker) {
+	w.maxDepthForName[o.key] = o.value
+}
+
+// OptionMaxDepthForName sets a maximum message recursion depth starting from
+// the given field. This mitigates the impact of infinite recursion in recursive
+// messages (like protobuf.Struct). Only traversed Message fields add to the
+// recursion depth.
+//
+// A depth of zero will return the field. If depth is set to less
+// than zero, the default recursion depth (99) will be used.
+func OptionMaxDepthForName(name string, v int) Option {
+	return &optionMaxDepthForName{key: name, value: v}
 }
 
 type optionKeepEmpty struct {
@@ -235,10 +272,11 @@ func (o *optionAddTypeOverride) Apply(w *walker) {
 }
 
 // OptionAddTypeOverride defines a special treatment for the given message type.
-// The type name is expected to be the full name, i.e. 'com.acme.Anvil'.
+// The type name is expected to be the full name, i.e. 'acme.products.Anvil'.
 //
 // You can effectively use multiple instances of this option as long as their
-// type name differs.
+// type name differs - otherwise, earlier ones will be overwritten by later
+// ones.
 func OptionAddTypeOverride(type_ string, v MessageFunc) Option {
 	return &optionAddTypeOverride{key: type_, value: v}
 }
@@ -256,13 +294,22 @@ func (o *optionAddNameOverride) Apply(w *walker) {
 	w.nameOverrides[o.key] = o.value
 }
 
-// OptionAddNameOverride defines a special treatment for the given message
-// field. The type name is expected to be the full name, i.e.
-// 'com.acme.Anvil.weight'.
+// OptionAddNameOverride defines a special (post-)processing for the given
+// field. Except for scalar fields, processing occurs after the normal
+// conversion. For scalar fields, it is applied instead of normal conversion.
+//
+// The name is a chain of field names, separated by dots. Repeated fields and
+// their subfields can be referenced (i.e. 'addresses.street'), but there is no
+// support for indexing. The same goes for map fields.
+//
+// An override on a repeated field will be applied to each element. There is no
+// support for post-processing the converted list as a whole. Such behaviour can
+// be achieved by overriding the containing message.
 //
 // You can effectively use multiple instances of this option as long as their
-// type name differs.
-func OptionAddNameOverride(type_ string, v interface{}) Option {
+// name differs - otherwise, earlier ones will be overwritten by later ones.
+//
+func OptionAddNameOverride(name string, v interface{}) Option {
 	var f OverrideFunc
 	switch x := v.(type) {
 	case ScalarFunc:
@@ -273,10 +320,14 @@ func OptionAddNameOverride(type_ string, v interface{}) Option {
 		f = FromMessageFunc(x)
 	case func(fd protoreflect.FieldDescriptor, kvs []KeyValue) interface{}:
 		f = FromMessageFunc(x)
+	case MapFunc:
+		f = FromMapFunc(x)
+	case func(protoreflect.FieldDescriptor, map[interface{}]interface{}) interface{}:
+		f = FromMapFunc(x)
 	default:
-		panic(fmt.Sprintf("expected either a ScalarFunc or a MessageFunc, got %T", v))
+		panic(fmt.Sprintf("Valid options: ScalarFunc, MessageFunc, MapFunc, got %T", v))
 	}
-	return &optionAddNameOverride{key: type_, value: f}
+	return &optionAddNameOverride{key: name, value: f}
 }
 
 type optionAddScalarFunc struct {
@@ -297,7 +348,8 @@ func (o *optionAddScalarFunc) Apply(w *walker) {
 // function specified via SetDefaultFunc will be applied.
 //
 // You can effectively use multiple instances of this option as long as their
-// protoreflect.Kind differs.
+// protoreflect.Kind differs - otherwise, earlier ones will be overwritten by
+// later ones.
 func OptionAddScalarFunc(k protoreflect.Kind, v ScalarFunc) Option {
 	return &optionAddScalarFunc{key: k, value: v}
 }
@@ -306,7 +358,6 @@ func OptionAddScalarFunc(k protoreflect.Kind, v ScalarFunc) Option {
 // sequence and later options may overwrite earlier ones.
 func NewWalker(options ...Option) Walker {
 	w := &walker{
-		maxDepth: defaultMaxRecurse,
 		defltFn: func(_ protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
 			if v == nil {
 				return nil
@@ -320,11 +371,13 @@ func NewWalker(options ...Option) Walker {
 			}
 			return m
 		},
-		mapFn:         func(fd protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} { return m },
-		repFn:         func(_ protoreflect.FieldDescriptor, xs []interface{}) interface{} { return xs },
-		typeOverrides: map[string]MessageFunc{},
-		nameOverrides: map[string]OverrideFunc{},
-		scalarFns:     map[protoreflect.Kind]ScalarFunc{},
+		mapFn:           func(fd protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} { return m },
+		repFn:           func(_ protoreflect.FieldDescriptor, xs []interface{}) interface{} { return xs },
+		maxDepth:        defaultMaxRecurse,
+		maxDepthForName: map[string]int{},
+		typeOverrides:   map[string]MessageFunc{},
+		nameOverrides:   map[string]OverrideFunc{},
+		scalarFns:       map[protoreflect.Kind]ScalarFunc{},
 	}
 	for _, option := range options {
 		option.Apply(w)
@@ -337,31 +390,23 @@ func NewWalker(options ...Option) Walker {
 
 func (w *walker) Apply(m proto.Message) interface{} {
 	mp := m.ProtoReflect()
-	return w.convertMessage(mp.Descriptor(), mp, 0, "")
+	return w.convertMessage(mp.Descriptor(), mp, w.maxDepth, "")
 }
 
 func (w *walker) ApplyDesc(d protoreflect.MessageDescriptor) interface{} {
-	return w.convertMessage(d, nil, 0, "")
+	return w.convertMessage(d, nil, w.maxDepth, "")
 }
 
 func (w *walker) createName(parent string, name protoreflect.Name) string {
-	if len(w.nameOverrides) == 0 {
-		//optimisation
-		return ""
-	}
 	if parent == "" {
 		return string(name)
 	}
 	return parent + "." + string(name)
 }
 
-func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflect.Message, depth int, parent string) interface{} {
-	// only messages induce a risk of infinite recursion
-	if depth > w.maxDepth {
-		return nil
-	}
+func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflect.Message, allowedDepth int, parent string) interface{} {
 	fds := md.Fields()
-	kvs := w.convertMessageFields(fds, m, depth, parent)
+	kvs := w.convertMessageFields(fds, m, allowedDepth, parent)
 	if w.keepOrder {
 		return kvs
 	}
@@ -372,7 +417,7 @@ func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflec
 	return result
 }
 
-func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m protoreflect.Message, depth int, parent string) []KeyValue {
+func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m protoreflect.Message, allowedDepth int, parent string) []KeyValue {
 	var result []KeyValue
 	ss := make([]protoreflect.FieldDescriptor, fds.Len())
 	for i := 0; i < len(ss); i += 1 {
@@ -383,10 +428,10 @@ func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m proto
 	})
 	for _, fd := range ss {
 		if m == nil {
-			result = append(result, KeyValue{string(fd.Name()), w.convertValue(fd, nil, depth+1, parent)})
+			result = append(result, KeyValue{string(fd.Name()), w.convertValue(fd, nil, allowedDepth-1, parent)})
 		} else {
 			v := m.Get(fd)
-			x := w.convertValue(fd, &v, depth+1, parent)
+			x := w.convertValue(fd, &v, allowedDepth-1, parent)
 			if x != nil {
 				result = append(result, KeyValue{string(fd.Name()), x})
 			}
@@ -396,39 +441,39 @@ func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m proto
 }
 
 // convertValue converts a value.
-func (w *walker) convertValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) interface{} {
+func (w *walker) convertValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) interface{} {
 	if fd.IsMap() {
-		return w.applyMapFn(fd, v, depth, parent)
+		return w.applyMapFn(fd, v, allowedDepth, parent)
 	}
 	if fd.Cardinality() == protoreflect.Repeated {
-		return w.applyRepFn(fd, v, depth, parent)
+		return w.applyRepFn(fd, v, allowedDepth, parent)
 	}
 	if fd.Kind() == protoreflect.MessageKind {
 		if v == nil {
-			return w.applyMessageFn(fd, nil, depth, parent)
+			return w.applyMessageFn(fd, nil, allowedDepth, parent)
 		}
-		return w.applyMessageFn(fd, v.Message(), depth, parent)
+		return w.applyMessageFn(fd, v.Message(), allowedDepth, parent)
 	}
-	return w.convertNonRepeatedValue(fd, v, depth, parent)
+	return w.convertNonRepeatedValue(fd, v, allowedDepth, parent)
 }
 
 // convertNonRepeatedValue converts a value that is assumed to not be repeated.
 // This is the case for items in a repeated field or map values. No checks are
 // (nor can be) performed on this assumption.
-func (w *walker) convertNonRepeatedValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) interface{} {
+func (w *walker) convertNonRepeatedValue(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) interface{} {
 	if fd.Kind() == protoreflect.MessageKind {
 		if v == nil {
-			return w.applyMessageFn(fd, nil, depth, parent)
+			return w.applyMessageFn(fd, nil, allowedDepth, parent)
 		}
 		if !v.IsValid() {
 			return nil
 		}
-		return w.applyMessageFn(fd, v.Message(), depth, parent)
+		return w.applyMessageFn(fd, v.Message(), allowedDepth, parent)
 	}
 	return w.applyScalarFn(fd, v, parent)
 }
 
-func (w *walker) convertList(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) []interface{} {
+func (w *walker) convertList(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) []interface{} {
 	if v == nil {
 		return nil
 	}
@@ -436,24 +481,24 @@ func (w *walker) convertList(fd protoreflect.FieldDescriptor, v *protoreflect.Va
 	var ys []interface{}
 	for i := 0; i < xs.Len(); i += 1 {
 		x := xs.Get(i)
-		if y := w.convertNonRepeatedValue(fd, &x, depth, parent); y != nil {
+		if y := w.convertNonRepeatedValue(fd, &x, allowedDepth, parent); y != nil {
 			ys = append(ys, y)
 		}
 	}
 	return ys
 }
 
-func (w *walker) convertMap(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) map[interface{}]interface{} {
+func (w *walker) convertMap(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) map[interface{}]interface{} {
 	name := w.createName(parent, fd.Name())
 	vfd := fd.MapValue()
 	m := make(map[interface{}]interface{})
 	if v == nil {
 		kfd := fd.MapKey()
-		m[string(kfd.Name())] = w.convertNonRepeatedValue(kfd, nil, depth, name)
-		m[string(vfd.Name())] = w.convertNonRepeatedValue(vfd, nil, depth, name)
+		m[string(kfd.Name())] = w.convertNonRepeatedValue(kfd, nil, allowedDepth, name)
+		m[string(vfd.Name())] = w.convertNonRepeatedValue(vfd, nil, allowedDepth, name)
 	} else {
 		rangeFn := func(k protoreflect.MapKey, iv protoreflect.Value) bool {
-			x := w.convertNonRepeatedValue(vfd, &iv, depth, name)
+			x := w.convertNonRepeatedValue(vfd, &iv, allowedDepth, name)
 			if x != nil {
 				m[k.Interface()] = x
 			}
@@ -465,53 +510,60 @@ func (w *walker) convertMap(fd protoreflect.FieldDescriptor, v *protoreflect.Val
 }
 
 func (w *walker) applyScalarFn(fd protoreflect.FieldDescriptor, v *protoreflect.Value, parent string) interface{} {
+	if !w.keepEmpty && (v == nil || IsDefaultScalar(v)) {
+		return nil
+	}
 	name := w.createName(parent, fd.Name())
 	if override := w.nameOverrides[name]; override != nil {
 		return override(fd, v)
 	}
-	if !w.keepEmpty && (v == nil || IsDefaultScalar(v)) {
-		return nil
+	if fn := w.scalarFns[fd.Kind()]; fn != nil {
+		return fn(fd, v)
 	}
-	fn := w.scalarFns[fd.Kind()]
-	if fn == nil {
-		return w.defltFn(fd, v)
-	}
-	return fn(fd, v)
+	return w.defltFn(fd, v)
 }
 
-func (w walker) applyRepFn(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) interface{} {
-	r := w.convertList(fd, v, depth, parent)
+func (w walker) applyRepFn(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) interface{} {
+	r := w.convertList(fd, v, allowedDepth, parent)
 	if !w.keepEmpty && len(r) == 0 {
 		return nil
 	}
 	return w.repFn(fd, r)
 }
 
-func (w walker) applyMessageFn(fd protoreflect.FieldDescriptor, m protoreflect.Message, depth int, parent string) interface{} {
+func (w walker) applyMessageFn(fd protoreflect.FieldDescriptor, m protoreflect.Message, allowedDepth int, parent string) interface{} {
 	// only messages induce a risk of infinite recursion
-	if depth > w.maxDepth {
+	if allowedDepth < 0 {
 		return nil
 	}
 	name := w.createName(parent, fd.Name())
-	fds := fd.Message().Fields()
-	v := w.convertMessageFields(fds, m, depth, name)
-	if override := w.nameOverrides[name]; override != nil {
-		return override(fd, v)
+	if overrideDepth, ok := w.maxDepthForName[name]; ok {
+		allowedDepth = overrideDepth
 	}
 
-	if !w.keepEmpty && len(v) == 0 {
+	fds := fd.Message().Fields()
+	kvs := w.convertMessageFields(fds, m, allowedDepth, name)
+	if !w.keepEmpty && len(kvs) == 0 {
 		return nil
+	}
+
+	if override := w.nameOverrides[name]; override != nil {
+		return override(fd, kvs)
 	}
 	if override := w.typeOverrides[string(fd.Message().FullName())]; override != nil {
-		return override(fd, v)
+		return override(fd, kvs)
 	}
-	return w.messageFn(fd, v)
+	return w.messageFn(fd, kvs)
 }
 
-func (w walker) applyMapFn(fd protoreflect.FieldDescriptor, v *protoreflect.Value, depth int, parent string) interface{} {
-	m := w.convertMap(fd, v, depth, parent)
+func (w walker) applyMapFn(fd protoreflect.FieldDescriptor, v *protoreflect.Value, allowedDepth int, parent string) interface{} {
+	m := w.convertMap(fd, v, allowedDepth, parent)
 	if !w.keepEmpty && len(m) == 0 {
 		return nil
+	}
+	name := w.createName(parent, fd.Name())
+	if override := w.nameOverrides[name]; override != nil {
+		return override(fd, m)
 	}
 	return w.mapFn(fd, m)
 }

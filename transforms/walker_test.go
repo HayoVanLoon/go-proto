@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/typepb"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -89,9 +90,11 @@ func TestWalker(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("expected %v, \ngot      %v", c.expected, actual)
+			}
+		})
 	}
 }
 
@@ -124,13 +127,15 @@ func TestOptionKeepOrder(t *testing.T) {
 			"happy keep order",
 		},
 	}
-	// run many times to decrease chance of random implementations succeeding.
-	for i := 0; i < 100; i += 1 {
-		for _, c := range cases {
-			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
-				t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// run many times to decrease chance of random implementations succeeding.
+			for i := 0; i < 100; i += 1 {
+				if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+					t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+				}
 			}
-		}
+		})
 	}
 }
 
@@ -149,16 +154,18 @@ func TestOptionKeepOrder_Descriptor(t *testing.T) {
 		},
 	}
 	// run many times to decrease chance of random implementations succeeding.
-	for i := 0; i < 100; i += 1 {
-		for _, c := range cases {
-			if actual := c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
-				t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for i := 0; i < 100; i += 1 {
+				if actual := c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
+					t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+				}
 			}
-		}
+		})
 	}
 }
 
-func TestOptionAddOverrides(t *testing.T) {
+func TestOptionAddTypeOverride(t *testing.T) {
 	inpFunc := func(fd protoreflect.FieldDescriptor, kvs []KeyValue) interface{} {
 		// only return its name
 		for _, kv := range kvs {
@@ -176,18 +183,47 @@ func TestOptionAddOverrides(t *testing.T) {
 		name     string
 	}{
 		{
-			NewWalker(
-				OptionAddScalarFunc(protoreflect.Int64Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
-					return value.Int() % 3
-				}),
-				OptionAddScalarFunc(protoreflect.Int32Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
-					return strconv.Itoa(int(value.Int()))
-				}),
-			),
-			&timestamppb.Timestamp{Seconds: 4, Nanos: 2},
-			map[string]interface{}{"seconds": int64(1), "nanos": "2"},
-			"type overrides for int64 and int32",
+			NewWalker(OptionAddTypeOverride("google.protobuf.Method", inpFunc)),
+			&apipb.Api{
+				Name: "foo",
+				Methods: []*apipb.Method{
+					{Name: "foo_method", RequestStreaming: true},
+					{Name: "bar_method"},
+				},
+			},
+			map[string]interface{}{
+				"name":    "foo",
+				"methods": []interface{}{"foo_method", "bar_method"},
+			},
+			"message override by type",
 		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
+	}
+}
+
+func TestOptionAddNameOverride(t *testing.T) {
+	inpFunc := func(fd protoreflect.FieldDescriptor, kvs []KeyValue) interface{} {
+		// only return its name
+		for _, kv := range kvs {
+			if kv.Key == "name" {
+				return kv.Value
+			}
+		}
+		return nil
+	}
+
+	cases := []struct {
+		walker   Walker
+		input    proto.Message
+		expected interface{}
+		name     string
+	}{
 		{
 			NewWalker(
 				OptionAddNameOverride("seconds", func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
@@ -215,8 +251,46 @@ func TestOptionAddOverrides(t *testing.T) {
 		},
 		{
 			NewWalker(OptionAddNameOverride(
+				"methods",
+				func(_ protoreflect.FieldDescriptor, kvs []KeyValue) interface{} {
+					m := make(map[string]interface{})
+					for _, kv := range kvs {
+						if k := kv.Key; k == "name" {
+							switch v := kv.Value.(type) {
+							case string:
+								m[k] = strings.ToUpper(v)
+							}
+						} else {
+							m[k] = kv.Value
+						}
+					}
+					return m
+				},
+			)),
+			&apipb.Api{
+				Name: "foo",
+				Methods: []*apipb.Method{
+					{Name: "foo_method", RequestStreaming: true},
+					{Name: "bar_method"},
+				},
+			},
+			map[string]interface{}{
+				"name": "foo",
+				"methods": []interface{}{
+					map[string]interface{}{
+						"name": "FOO_METHOD", "request_streaming": true,
+					},
+					map[string]interface{}{
+						"name": "BAR_METHOD",
+					},
+				},
+			},
+			"message with children override by name",
+		},
+		{
+			NewWalker(OptionAddNameOverride(
 				"methods.request_streaming",
-				func(protoreflect.FieldDescriptor, *protoreflect.Value) interface{} {
+				func(_ protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
 					return 42
 				},
 			)),
@@ -234,14 +308,19 @@ func TestOptionAddOverrides(t *testing.T) {
 						"name": "foo_method", "request_streaming": 42,
 					},
 					map[string]interface{}{
-						"name": "bar_method", "request_streaming": 42,
+						"name": "bar_method",
 					},
 				},
 			},
 			"scalar override by name",
 		},
 		{
-			NewWalker(OptionAddTypeOverride("google.protobuf.Method", inpFunc)),
+			NewWalker(OptionAddNameOverride(
+				"methods.name",
+				func(_ protoreflect.FieldDescriptor, v *protoreflect.Value) interface{} {
+					return strings.ToUpper(v.String())
+				},
+			)),
 			&apipb.Api{
 				Name: "foo",
 				Methods: []*apipb.Method{
@@ -250,16 +329,76 @@ func TestOptionAddOverrides(t *testing.T) {
 				},
 			},
 			map[string]interface{}{
-				"name":    "foo",
-				"methods": []interface{}{"foo_method", "bar_method"},
+				"name": "foo",
+				"methods": []interface{}{
+					map[string]interface{}{
+						"name": "FOO_METHOD", "request_streaming": true,
+					},
+					map[string]interface{}{
+						"name": "BAR_METHOD",
+					},
+				},
 			},
-			"message override by type",
+			"scalar override by name",
+		},
+		{
+			NewWalker(OptionAddNameOverride(
+				"fields",
+				func(_ protoreflect.FieldDescriptor, m map[interface{}]interface{}) interface{} {
+					return len(m)
+				},
+			)),
+			&structpb.Struct{
+				Fields: map[string]*structpb.Value{
+					"foo": structpb.NewNumberValue(1.2),
+					"bar": structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{
+						structpb.NewStringValue("bla"),
+						structpb.NewStringValue("bus"),
+					}}),
+				},
+			},
+			map[string]interface{}{
+				"fields": 2,
+			},
+			"override map",
 		},
 	}
 	for _, c := range cases {
-		if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
+	}
+}
+
+func TestOptionAddScalarFunc(t *testing.T) {
+	cases := []struct {
+		walker   Walker
+		input    proto.Message
+		expected interface{}
+		name     string
+	}{
+		{
+			NewWalker(
+				OptionAddScalarFunc(protoreflect.Int64Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
+					return value.Int() % 3
+				}),
+				OptionAddScalarFunc(protoreflect.Int32Kind, func(_ protoreflect.FieldDescriptor, value *protoreflect.Value) interface{} {
+					return strconv.Itoa(int(value.Int()))
+				}),
+			),
+			&timestamppb.Timestamp{Seconds: 4, Nanos: 2},
+			map[string]interface{}{"seconds": int64(1), "nanos": "2"},
+			"type overrides for int64 and int32",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
 	}
 }
 
@@ -284,9 +423,11 @@ func TestOptionKeepEmpty(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if actual := walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if actual := walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: expected %v, got %v", c.name, c.expected, actual)
+			}
+		})
 	}
 }
 
@@ -306,9 +447,11 @@ func TestOptionKeepEmpty_Descriptor(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if actual := walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if actual := walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
 	}
 }
 
@@ -350,9 +493,11 @@ func TestWalker_Descriptor(t *testing.T) {
 		// TODO(hvl): search for (non-recursive) message type with map
 	}
 	for _, c := range cases {
-		if actual := c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
 	}
 }
 
@@ -389,7 +534,7 @@ func TestOptionMaxDepth(t *testing.T) {
 					},
 				},
 			},
-			"0",
+			"default depth",
 		},
 		{
 			NewWalker(OptionMaxDepth(2)),
@@ -430,15 +575,17 @@ func TestOptionMaxDepth(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
-			switch x := c.expected.(type) {
-			case map[string]interface{}:
-				switch y := actual.(type) {
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				switch x := c.expected.(type) {
 				case map[string]interface{}:
-					t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, x, y)
+					switch y := actual.(type) {
+					case map[string]interface{}:
+						t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, x, y)
+					}
 				}
 			}
-		}
+		})
 	}
 }
 
@@ -528,9 +675,76 @@ func TestOptionMaxDepth_Descriptor(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		walker := NewWalker(OptionMaxDepth(c.depth))
-		if actual := walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
-			t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			walker := NewWalker(OptionMaxDepth(c.depth))
+			if actual := walker.ApplyDesc(c.input.ProtoReflect().Descriptor()); !reflect.DeepEqual(actual, c.expected) {
+				t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, c.expected, actual)
+			}
+		})
+	}
+}
+
+func TestOptionMaxDepthForName(t *testing.T) {
+	apiInput := &apipb.Api{
+		Name: "foo",
+		Methods: []*apipb.Method{
+			{
+				Name: "foo_method",
+				Options: []*typepb.Option{
+					{Name: "foo_opt"},
+				},
+			},
+		},
+	}
+
+	cases := []struct {
+		walker   Walker
+		input    proto.Message
+		expected interface{}
+		name     string
+	}{
+		{
+			NewWalker(OptionMaxDepthForName("methods", 0)),
+			apiInput,
+			map[string]interface{}{
+				"name": "foo",
+				"methods": []interface{}{
+					map[string]interface{}{
+						"name": "foo_method",
+					},
+				},
+			},
+			"depth 0 for name",
+		},
+		{
+			// TODO(hvl): use deeper type; this only tests 'maxDepth > 0', not 'maxDepth < 2'
+			NewWalker(OptionMaxDepthForName("methods", 1)),
+			apiInput,
+			map[string]interface{}{
+				"name": "foo",
+				"methods": []interface{}{
+					map[string]interface{}{
+						"name": "foo_method",
+						"options": []interface{}{
+							map[string]interface{}{"name": "foo_opt"},
+						},
+					},
+				},
+			},
+			"depth 1 for name",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if actual := c.walker.Apply(c.input); !reflect.DeepEqual(actual, c.expected) {
+				switch x := c.expected.(type) {
+				case map[string]interface{}:
+					switch y := actual.(type) {
+					case map[string]interface{}:
+						t.Errorf("%s: \nexpected %v, \ngot      %v", c.name, x, y)
+					}
+				}
+			}
+		})
 	}
 }
