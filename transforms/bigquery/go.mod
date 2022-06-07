@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	cloud.google.com/go/bigquery v1.32.0
-	github.com/HayoVanLoon/go-proto/transforms v0.1.2
+	github.com/HayoVanLoon/go-proto/transforms v0.1.0
 	google.golang.org/protobuf v1.28.0
 )
 
