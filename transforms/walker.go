@@ -365,7 +365,7 @@ func NewWalker(options ...Option) Walker {
 			return v.Interface()
 		},
 		messageFn: func(fd protoreflect.FieldDescriptor, kvs []KeyValue) interface{} {
-			m := make(map[string]interface{})
+			m := make(map[string]interface{}, len(kvs))
 			for _, kv := range kvs {
 				m[kv.Key] = kv.Value
 			}
@@ -410,7 +410,7 @@ func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflec
 	if w.keepOrder {
 		return kvs
 	}
-	result := make(map[string]interface{})
+	result := make(map[string]interface{}, len(kvs))
 	for _, kv := range kvs {
 		result[kv.Key] = kv.Value
 	}
@@ -418,26 +418,26 @@ func (w *walker) convertMessage(md protoreflect.MessageDescriptor, m protoreflec
 }
 
 func (w *walker) convertMessageFields(fds protoreflect.FieldDescriptors, m protoreflect.Message, allowedDepth int, parent string) []KeyValue {
-	var result []KeyValue
-	ss := make([]protoreflect.FieldDescriptor, fds.Len())
-	for i := 0; i < len(ss); i += 1 {
-		ss[i] = fds.Get(i)
+	xs := make([]protoreflect.FieldDescriptor, fds.Len())
+	for i := 0; i < len(xs); i += 1 {
+		xs[i] = fds.Get(i)
 	}
-	sort.Slice(ss, func(i, j int) bool {
-		return ss[i].Number() < ss[j].Number()
+	sort.Slice(xs, func(i, j int) bool {
+		return xs[i].Number() < xs[j].Number()
 	})
-	for _, fd := range ss {
+	var kvs []KeyValue
+	for _, fd := range xs {
 		if m == nil {
-			result = append(result, KeyValue{string(fd.Name()), w.convertValue(fd, nil, allowedDepth-1, parent)})
+			kvs = append(kvs, KeyValue{string(fd.Name()), w.convertValue(fd, nil, allowedDepth-1, parent)})
 		} else {
 			v := m.Get(fd)
 			x := w.convertValue(fd, &v, allowedDepth-1, parent)
 			if x != nil {
-				result = append(result, KeyValue{string(fd.Name()), x})
+				kvs = append(kvs, KeyValue{string(fd.Name()), x})
 			}
 		}
 	}
-	return result
+	return kvs
 }
 
 // convertValue converts a value.

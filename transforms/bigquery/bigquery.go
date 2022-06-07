@@ -106,7 +106,7 @@ func NewSchemaConverter(options ...transforms.Option) SchemaConverter {
 		transforms.OptionMapFunc(convertSchemaMap),
 		transforms.OptionKeepEmpty(true),
 		transforms.OptionKeepOrder(true),
-		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertSchemaTimestamp),
+		transforms.OptionAddTypeOverride(string(timestampDescriptor.FullName()), convertSchemaTimestamp),
 	}
 	for _, option := range options {
 		switch option.Type() {
@@ -227,7 +227,7 @@ func NewRowConverter(options ...transforms.Option) RowConverter {
 	opts := []transforms.Option{
 		transforms.OptionDefaultScalarFunc(convertRowScalar),
 		transforms.OptionMapFunc(convertRowMapFunc),
-		transforms.OptionAddOverride(string(timestampDescriptor.FullName()), convertRowTimestamp),
+		transforms.OptionAddTypeOverride(string(timestampDescriptor.FullName()), convertRowTimestamp),
 	}
 	for _, option := range options {
 		switch option.Type() {
