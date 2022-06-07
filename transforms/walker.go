@@ -18,33 +18,22 @@ type MessageFunc func(protoreflect.FieldDescriptor, []KeyValue) interface{}
 type MapFunc func(protoreflect.FieldDescriptor, map[interface{}]interface{}) interface{}
 type RepeatedFunc func(protoreflect.FieldDescriptor, []interface{}) interface{}
 
+// FromScalarFunc creates an OverrideFunc from a Scalar func.
 func FromScalarFunc(f ScalarFunc) OverrideFunc {
 	return func(fd protoreflect.FieldDescriptor, v interface{}) interface{} {
-		switch x := v.(type) {
-		case *protoreflect.Value:
-			return f(fd, x)
-		}
-		panic(fmt.Sprintf("expected type *protoreflect.Value, got %T", v))
+		return f(fd, v.(*protoreflect.Value))
 	}
 }
 
 func FromMapFunc(f MapFunc) OverrideFunc {
 	return func(fd protoreflect.FieldDescriptor, v interface{}) interface{} {
-		switch x := v.(type) {
-		case map[interface{}]interface{}:
-			return f(fd, x)
-		}
-		panic(fmt.Sprintf("expected type map[interface{}]interface{}, got %T", v))
+		return f(fd, v.(map[interface{}]interface{}))
 	}
 }
 
 func FromMessageFunc(f MessageFunc) OverrideFunc {
 	return func(fd protoreflect.FieldDescriptor, v interface{}) interface{} {
-		switch x := v.(type) {
-		case []KeyValue:
-			return f(fd, x)
-		}
-		panic(fmt.Sprintf("expected type []KeyValue, got %T", v))
+		return f(fd, v.([]KeyValue))
 	}
 }
 
