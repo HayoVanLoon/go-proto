@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	cloud.google.com/go/bigquery v1.32.0
-	github.com/HayoVanLoon/go-proto/transforms v0.0.0-20220404123321-f45647846394
+	github.com/HayoVanLoon/go-proto/transforms v0.1.2
 	google.golang.org/protobuf v1.28.0
 )
 
@@ -14,7 +14,7 @@ require (
 	cloud.google.com/go/iam v0.3.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
-	github.com/google/go-cmp v0.5.7 // indirect
+	github.com/google/go-cmp v0.5.8 // indirect
 	github.com/googleapis/gax-go/v2 v2.3.0 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	golang.org/x/net v0.0.0-20220325170049-de3da57026de // indirect
